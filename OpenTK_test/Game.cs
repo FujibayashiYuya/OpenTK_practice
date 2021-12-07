@@ -1,4 +1,4 @@
-﻿using OpenTK;
+using OpenTK;
 using OpenTK.Graphics;
 using OpenTK.Graphics.OpenGL;
 using OpenTK.Input;
@@ -67,7 +67,7 @@ namespace OpenTK_test
         int vao1;					//VAOの識別番号を保持
 
         int ColorTexture;                //背景画像
-        int size = 512;             //textureサイズ
+        int size = 256;             //textureサイズ
 
         //試験用
         int DepthTexture;
@@ -191,6 +191,8 @@ namespace OpenTK_test
             GL.Enable(EnableCap.Multisample);
             GL.Enable(EnableCap.VertexProgramPointSize);//ポイントの設定
             GL.Enable(EnableCap.PointSprite);
+            GL.Enable(EnableCap.Blend); // ブレンドの許可
+            
 
             GL.Disable(EnableCap.Lighting);
             
@@ -199,12 +201,14 @@ namespace OpenTK_test
             //テクスチャ生成
             GL.GenTextures(1, out ColorTexture);
             GL.BindTexture(TextureTarget.Texture2D, ColorTexture);
-
+            //fboの時
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8, size, size, 0, OpenTK.Graphics.OpenGL.PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.MirroredRepeat);
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.MirroredRepeat);
 
+           /*
             Bitmap file = new Bitmap("test1.png");
             //png画像の反転を直す
             file.RotateFlip(RotateFlipType.RotateNoneFlipY);
@@ -212,7 +216,7 @@ namespace OpenTK_test
             BitmapData data = file.LockBits(new Rectangle(0, 0, file.Width, file.Height), ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             //画像の時
             GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, data.Width, data.Height, 0, OpenTK.Graphics.OpenGL.PixelFormat.Bgra, PixelType.UnsignedByte, data.Scan0);
-            
+            */
             /*
             //裏面削除、反時計回りが表でカリング
             GL.Enable(EnableCap.CullFace);　//カリングの許可
@@ -368,6 +372,68 @@ namespace OpenTK_test
             GL.UseProgram(shaderProgram);
             #endregion
             
+            #region fbo
+            //一応Depthも試験的に作ってみる
+            GL.GenTextures(1, out DepthTexture);
+            GL.BindTexture(TextureTarget.Texture2D, DepthTexture);
+            GL.TexImage2D(TextureTarget.Texture2D, 0, (PixelInternalFormat)All.DepthComponent32, size, size, 0, OpenTK.Graphics.OpenGL.PixelFormat.DepthComponent, PixelType.UnsignedInt, IntPtr.Zero);
+            // things go horribly wrong if DepthComponent's Bitcount does not match the main Framebuffer's Depth
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Linear);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToBorder);
+            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToBorder);
+            GL.BindTexture(TextureTarget.Texture2D, 0);
+
+            GL.Ext.GenFramebuffers(1, out fbo_screen);
+            GL.Ext.BindFramebuffer(FramebufferTarget.FramebufferExt, fbo_screen);
+            GL.Ext.FramebufferTexture2D(FramebufferTarget.FramebufferExt, FramebufferAttachment.ColorAttachment0Ext, TextureTarget.Texture2D, ColorTexture, 0);
+            GL.Ext.FramebufferTexture2D(FramebufferTarget.FramebufferExt, FramebufferAttachment.DepthAttachmentExt, TextureTarget.Texture2D, DepthTexture, 0);
+
+            //エラーチェック
+            FramebufferErrorCode fbostatus = GL.CheckFramebufferStatus(FramebufferTarget.FramebufferExt);
+            if (fbostatus != FramebufferErrorCode.FramebufferComplete &&
+                fbostatus != FramebufferErrorCode.FramebufferCompleteExt)
+            {
+                Console.WriteLine("Error creating framebuffer: {0}", status);
+            }
+
+            //FBO（https://github.com/mono/opentk/blob/main/Source/Examples/OpenGL/1.x/FramebufferObject.cs）
+            GL.PushAttrib(AttribMask.ViewportBit);
+            {
+                GL.ClearColor(0.0f, 0.0f, 0.0f, 0f);
+                GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+                GL.Viewport(0, 0, size, size);
+
+                OpenTK.Matrix4 perspective = OpenTK.Matrix4.CreateOrthographic(size/2, size/2, 0f, 1.0f);
+                GL.MatrixMode(MatrixMode.Projection);
+                GL.LoadMatrix(ref perspective);
+
+                Matrix4 lookat = Matrix4.LookAt(0f, 0f, 1.0f, 0f, 0f, 0f, 0f, 1f, 0f);
+                GL.MatrixMode(MatrixMode.Modelview);
+                GL.LoadMatrix(ref lookat);
+                
+                //FBOの加算を有効に
+                GL.Enable(EnableCap.Blend);
+                GL.BlendFunc(BlendingFactor.One, BlendingFactor.One);
+                GL.BlendEquation(BlendEquationMode.FuncAdd);
+                
+                //http://penguinitis.g1.xrea.com/computer/programming/OpenGL/23-blend.html
+                GL.Disable(EnableCap.DepthTest);
+
+                MakeMap(1.0f, 256f, 0.0f);
+
+                GL.Disable(EnableCap.Blend);
+                GL.Enable(EnableCap.DepthTest);
+                
+            }
+            GL.PopAttrib();
+            GL.Ext.BindFramebuffer(FramebufferTarget.FramebufferExt, 0); // disable rendering into the FBO
+
+            //初期画面背景
+            GL.ClearColor(Color4.DarkBlue);
+            #endregion fbo
+            
         }
 
         //ウィンドウの終了時に実行される。
@@ -478,18 +544,20 @@ namespace OpenTK_test
 
             GL.BindTexture(TextureTarget.Texture2D, 0);
 
+            /*
             GL.UseProgram(shaderProgram);
-
-            GL.PointSize(100);
+            GL.PointSize(10000f);
             GL.Begin(BeginMode.Points);
-            GL.Color4(1.0f, 1.0f, 1.0f, 1.0f);
-            GL.Vertex3(2, 1, 3);
+            GL.Color4(1.0f, 0.0f, 1.0f, 1.0f);
+            GL.Vertex3(1.3, 1, 3);
             GL.Vertex3(1, 1, 3);
             GL.End();
+            GL.Enable(EnableCap.DepthTest);
+            GL.UseProgram(0);
+            */
 
             GL.BindTexture(TextureTarget.Texture2D, ColorTexture);
-            //メインのポリゴン表示
-            /*
+            //メインのポリゴン表示  
             GL.Color4(Color4.White);
             GL.Begin(BeginMode.Quads);
             GL.TexCoord2(1.0, 1.0);
@@ -501,7 +569,7 @@ namespace OpenTK_test
             GL.TexCoord2(1.0, 0.0);
             GL.Vertex3(4, -1, 0);
             GL.End();
-            */
+            
             GL.BindTexture(TextureTarget.Texture2D, 0);
 
             SwapBuffers();
@@ -591,7 +659,7 @@ namespace OpenTK_test
                     OpenTK.Vector3 position = new OpenTK.Vector3((float)px, (float)py, (float)pz);
                     OpenTK.Vector3 normal = new OpenTK.Vector3((float)nx, (float)ny, (float)nz);
                     OpenTK.Vector2 uv = new OpenTK.Vector2((float)(nx / 2 + 0.5f), (float)(ny / 2 + 0.5f));
-                    OpenTK.Vector4 color = new OpenTK.Vector4(1.0f, 1.0f, 0.0f, 1.0f);
+                    OpenTK.Vector4 color = new OpenTK.Vector4(1.0f, 0.0f, 0.0f, 1.0f);
                     vertexList.AddLast(new Vertex(position, normal, uv, color));
                 }
             }
@@ -608,6 +676,16 @@ namespace OpenTK_test
             }
             vertices1 = vertexList.ToArray();
             indices1 = indexList.ToArray();
+        }
+
+        //放射照度マップの描画(w：描画範囲の縦横幅)
+        void MakeMap(float wh, float r, float depth)
+        {
+            GL.PointSize(r);
+            GL.Begin(BeginMode.Points);
+            GL.Color4(0.0f, 1.0f, 0.1f, 1.0f);
+            GL.Vertex3(0.0f, 0.0f, depth);
+            GL.End();
         }
     }
 
